@@ -17,6 +17,8 @@ from .core.protocol import Request
 from .core.logging import debug
 from .core.popups import popup_css, popup_class
 
+FUNCTION_ARG_SCOPES = "meta.function-call.arguments, punctuation.section.arguments.end"
+
 
 class SignatureHelpListener(sublime_plugin.ViewEventListener):
 
@@ -28,6 +30,7 @@ class SignatureHelpListener(sublime_plugin.ViewEventListener):
         self._language_id = ""
         self._signatures = []  # type: List[Any]
         self._active_signature = -1
+        self._signature_pos = -1
 
     @classmethod
     def is_applicable(cls, settings):
@@ -52,23 +55,24 @@ class SignatureHelpListener(sublime_plugin.ViewEventListener):
     def on_modified_async(self):
         pos = self.view.sel()[0].begin()
         last_char = self.view.substr(pos - 1)
-        # TODO: this will fire too often, narrow down using scopes or regex
+
         if not self._initialized:
             self.initialize()
 
         if self._signature_help_triggers:
-            if last_char in self._signature_help_triggers:
-                client = client_for_view(self.view)
-                if client:
-                    purge_did_change(self.view.buffer_id())
-                    document_position = get_document_position(self.view, pos)
-                    if document_position:
-                        client.send_request(
-                            Request.signatureHelp(document_position),
-                            lambda response: self.handle_response(response, pos))
+            if not self._visible:
+                if last_char in self._signature_help_triggers:
+                    self._signature_pos = pos
+                    client = client_for_view(self.view)
+                    if client:
+                        purge_did_change(self.view.buffer_id())
+                        document_position = get_document_position(self.view, pos)
+                        if document_position:
+                            client.send_request(
+                                Request.signatureHelp(document_position),
+                                lambda response: self.handle_response(response, pos))
             else:
-                # TODO: this hides too soon.
-                if self._visible:
+                if not self._in_arguments():
                     self.view.hide_popup()
 
     def handle_response(self, response, point):
@@ -87,17 +91,21 @@ class SignatureHelpListener(sublime_plugin.ViewEventListener):
                     self._active_signature = -1
 
             if len(self._signatures) > 0:
-                mdpopups.show_popup(self.view,
-                                    self._build_popup_content(),
-                                    css=popup_css,
-                                    md=True,
-                                    flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
-                                    location=point,
-                                    wrapper_class=popup_class,
-                                    max_width=800,
-                                    on_hide=self._on_hide,
-                                    on_navigate=lambda href: self._on_hover_navigate(href))
+                self._show_popup()
                 self._visible = True
+
+    def _show_popup(self):
+        mdpopups.show_popup(self.view,
+                            self._build_popup_content(),
+                            css=popup_css,
+                            md=True,
+                            flags=sublime.COOPERATE_WITH_AUTO_COMPLETE,
+                            # flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+                            location=self._signature_pos,
+                            wrapper_class=popup_class,
+                            max_width=800,
+                            on_hide=self._on_hide,
+                            on_navigate=lambda href: self._on_hover_navigate(href))
 
     def on_query_context(self, key, _, operand, __):
         if key != "lsp.signature_help":
@@ -124,8 +132,15 @@ class SignatureHelpListener(sublime_plugin.ViewEventListener):
 
             return True  # We handled this keybinding.
 
+    def _in_arguments(self) -> bool:
+        return self.view.score_selector(self.view.sel()[0].begin(), FUNCTION_ARG_SCOPES) > 0
+
     def _on_hide(self):
-        self._visible = False
+        if self._in_arguments():
+            self._show_popup()
+        else:
+            self._visible = False
+            self._signature_pos = -1
 
     def _on_hover_navigate(self, href):
         webbrowser.open_new_tab(href)
