@@ -89,36 +89,65 @@ def clear_document_states(window: sublime.Window):
         del document_states[window.id()]
 
 
-pending_buffer_changes = dict()  # type: Dict[int, Dict]
+class TextChange(object):
+    def __init__(self, view: sublime.View,
+                 change_count: int,
+                 region: 'Optional[sublime.Region]' = None,
+                 newText: 'Optional[str]' = None) -> None:
+        self.view = view
+        self.change_count = change_count
+        self.region = region
+        self.newText = newText
+
+    def __repr__(self):
+        return "{} {} {} {}".format(self.view.file_name(), self.region.a, self.region.b, self.newText)
 
 
-def queue_did_change(view: sublime.View):
-    buffer_id = view.buffer_id()
-    buffer_version = 1
-    pending_buffer = None
+pending_buffer_changes = dict()  # type: Dict[int, List[TextChange]]
+
+
+def get_change_list(buffer_id: int):
     if buffer_id in pending_buffer_changes:
-        pending_buffer = pending_buffer_changes[buffer_id]
-        buffer_version = pending_buffer["version"] + 1
-        pending_buffer["version"] = buffer_version
+        return pending_buffer_changes[buffer_id]
     else:
-        pending_buffer_changes[buffer_id] = {
-            "view": view,
-            "version": buffer_version
-        }
+        change_list = list()  # type: List[TextChange]
+        pending_buffer_changes[buffer_id] = change_list
+        return change_list
+
+
+def queue_did_change(view: sublime.View, region: sublime.Region, newText: 'Optional[str]'):
+    buffer_id = view.buffer_id()
+
+    change_list = get_change_list(buffer_id)
+    change_count = view.change_count()
+
+    if change_count > len(change_list):
+        change = TextChange(view, change_count, region, newText)
+        change_list.append(change)
+        debug(change)
+    else:
+        raise Exception('No changes found')
 
     sublime.set_timeout_async(
-        lambda: purge_did_change(buffer_id, buffer_version), 500)
+        lambda: purge_did_change(buffer_id, change_count), 500)
 
 
-def purge_did_change(buffer_id: int, buffer_version=None):
+def purge_did_change(buffer_id: int, requested_version=None):
     if buffer_id not in pending_buffer_changes:
+        debug('no pending changes for buffer', buffer_id)
         return
 
-    pending_buffer = pending_buffer_changes.get(buffer_id)
+    assert buffer_id in pending_buffer_changes
+    change_list = pending_buffer_changes[buffer_id]
+    last_edit = change_list[-1]
 
-    if pending_buffer:
-        if buffer_version is None or buffer_version == pending_buffer["version"]:
-            notify_did_change(pending_buffer["view"])
+    if requested_version is None or requested_version == last_edit.change_count:
+        debug('purging at version', requested_version)
+        notify_did_change(last_edit.view)
+    else:
+        debug('skipping version', requested_version)
+    # else:
+    #     debug('buffer version ', buffer_version, ' in purge')
 
 
 def notify_did_open(view: sublime.View):
