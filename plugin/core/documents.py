@@ -10,12 +10,14 @@ except ImportError:
     pass
 
 from .logging import debug
-from .protocol import Notification, Point
+from .protocol import Notification, Point, Range
 from .settings import settings
 from .url import filename_to_uri
 from .configurations import config_for_scope, is_supported_view, is_supported_syntax, is_supportable_syntax
 from .clients import client_for_view, window_clients, check_window_unloaded
 from .events import Events
+
+assert Range
 
 SUBLIME_WORD_MASK = 515
 
@@ -54,14 +56,10 @@ document_states = {}  # type: Dict[int, Dict[str, DocumentState]]
 
 
 class DocumentState:
-    """Stores version count for documents open in a language service"""
+    """Stores synchronization state for documents open in a language service"""
     def __init__(self, path: str) -> 'None':
         self.path = path
         self.version = 0
-
-    def inc_version(self):
-        self.version += 1
-        return self.version
 
 
 def get_document_state(window: sublime.Window, path: str) -> DocumentState:
@@ -92,15 +90,15 @@ def clear_document_states(window: sublime.Window):
 class TextChange(object):
     def __init__(self, view: sublime.View,
                  change_count: int,
-                 region: 'Optional[sublime.Region]' = None,
-                 newText: 'Optional[str]' = None) -> None:
+                 range: 'Optional[Range]' = None,
+                 text: 'Optional[str]' = None) -> None:
         self.view = view
         self.change_count = change_count
-        self.region = region
-        self.newText = newText
+        self.range = range
+        self.text = text
 
     def __repr__(self):
-        return "{} {} {} {}".format(self.view.file_name(), self.region.a, self.region.b, self.newText)
+        return "{} {} {}".format(self.view.file_name(), self.range, self.text)
 
 
 pending_buffer_changes = dict()  # type: Dict[int, List[TextChange]]
@@ -122,7 +120,8 @@ def queue_did_change(view: sublime.View, region: sublime.Region, newText: 'Optio
     change_count = view.change_count()
 
     if change_count > len(change_list):
-        change = TextChange(view, change_count, region, newText)
+        range = Range.from_region(view, region)
+        change = TextChange(view, change_count, range, newText)
         change_list.append(change)
         debug(change)
     else:
@@ -143,7 +142,8 @@ def purge_did_change(buffer_id: int, requested_version=None):
 
     if requested_version is None or requested_version == last_edit.change_count:
         debug('purging at version', requested_version)
-        notify_did_change(last_edit.view)
+        # notify_did_change(last_edit.view)
+        notify_did_incremental_change(last_edit)
     else:
         debug('skipping version', requested_version)
     # else:
@@ -200,28 +200,70 @@ def notify_did_save(view: sublime.View):
             debug('document not tracked', file_name)
 
 
+def to_content_change(change: TextChange):
+    return {
+        "text": change.text,
+        "range": change.range.to_lsp() if change.range else None
+    }
+
+
+def notify_did_incremental_change(change: TextChange):
+    view = change.view
+    file_name = view.file_name()
+    window = view.window()
+    if window and file_name:
+        assert view.buffer_id() in pending_buffer_changes
+        pending_changes = pending_buffer_changes[view.buffer_id()]
+        content_changes = list(to_content_change(change) for change in pending_changes)
+        del pending_buffer_changes[view.buffer_id()]
+        debug('pending list cleared')
+
+        client = client_for_view(view)
+        if client:
+            document_state = get_document_state(window, file_name)
+            uri = filename_to_uri(file_name)
+            change_count = view.change_count()
+
+            params = {
+                "textDocument": {
+                    "uri": uri,
+                    # "languageId": config.languageId, clangd does not like this field, but no server uses it?
+                    "version": change_count,
+                },
+                "contentChanges": [content_changes]
+            }
+            debug('didChange', params)
+            document_state.version = change_count
+            # client.send_notification(Notification.didChange(params))
+
+
 def notify_did_change(view: sublime.View):
     file_name = view.file_name()
     window = view.window()
     if window and file_name:
         if view.buffer_id() in pending_buffer_changes:
             del pending_buffer_changes[view.buffer_id()]
-        # config = config_for_scope(view)
+            debug('pending list cleared')
+        else:
+            debug('no pending changes for buffer')
         client = client_for_view(view)
         if client:
             document_state = get_document_state(window, file_name)
             uri = filename_to_uri(file_name)
+            change_count = view.change_count()
+            # todo: add rangeLength from documentState to contentChange
             params = {
                 "textDocument": {
                     "uri": uri,
                     # "languageId": config.languageId, clangd does not like this field, but no server uses it?
-                    "version": document_state.inc_version(),
+                    "version": change_count,
                 },
                 "contentChanges": [{
-                    "text": view.substr(sublime.Region(0, view.size()))
+                    "text": view.substr(sublime.Region(0, view.size())),
                 }]
             }
             client.send_notification(Notification.didChange(params))
+            document_state.version = change_count
 
 
 document_sync_initialized = False
@@ -245,6 +287,58 @@ def is_transient_view(view):
     return view == window.transient_view_in_group(window.active_group())
 
 
+def get_cursors(view):
+    return [cursor for cursor in view.sel()]  # can't use `view.sel()[:]` because it gives an error `TypeError: an integer is required`
+
+
+class IncrementalSyncListener(sublime_plugin.EventListener):
+    prev_cursors = {}  # type: Dict[int, List[Tuple[sublime.Region, str]]]
+
+    def on_new_async(self, view):
+        self.record_cursor_pos(view)
+
+    def on_activated_async(self, view):
+        self.record_cursor_pos(view)
+
+    def record_cursor_pos(self, view):
+        cursors = []
+        for cursor in get_cursors(view):
+            if cursor.empty() and cursor.begin() > 0:  # if the cursor is empty and isn't at the start of the document
+                cursors.append((cursor, view.substr(cursor.begin() - 1)))  # record the previous character for backspace purposes
+            else:
+                cursors.append((cursor, view.substr(cursor)))  # record the text inside the cursor
+
+        self.prev_cursors[view.id()] = cursors
+
+    def on_selection_modified_async(self, view):
+        self.record_cursor_pos(view)
+
+    def on_insert(self, view, cursor_begin, cursor_end, text):
+        # self.log('insert', 'from', view.rowcol(cursor_begin), 'to', view.rowcol(cursor_end), '"' + text + '"')
+        if view.file_name():
+            Events.publish("view.on_modified", view, sublime.Region(cursor_begin, cursor_end), text)
+
+    def on_delete(self, view, cursor_begin, cursor_end, text):
+        # self.log('delete', 'from', view.rowcol(cursor_begin), 'to', cursor_end, '"' + text + '"')
+        if view.file_name():
+            Events.publish("view.on_modified", view, sublime.Region(cursor_begin, cursor_end), None)
+
+    def log(self, *values):
+        print(type(self).__name__, *values)
+
+    def on_modified_async(self, view):
+        offset = 0
+        for index, cursor in enumerate(view.sel()):
+            prev_cursor, prev_text = self.prev_cursors[view.id()][index]
+            prev_cursor = sublime.Region(prev_cursor.begin() + offset, prev_cursor.end() + offset)
+            if not prev_cursor.empty() or cursor.begin() < prev_cursor.begin():
+                self.on_delete(view, prev_cursor.begin(), prev_cursor.end(), prev_text)
+            if cursor.begin() > prev_cursor.begin():
+                region = prev_cursor.cover(cursor)
+                self.on_insert(view, region.begin(), region.end(), view.substr(region))
+            offset += cursor.begin() - prev_cursor.begin()
+
+
 class DocumentSyncListener(sublime_plugin.ViewEventListener):
     def __init__(self, view):
         self.view = view
@@ -264,9 +358,9 @@ class DocumentSyncListener(sublime_plugin.ViewEventListener):
         # skip transient views: if not is_transient_view(self.view):
         Events.publish("view.on_load_async", self.view)
 
-    def on_modified(self):
-        if self.view.file_name():
-            Events.publish("view.on_modified", self.view)
+    # def on_modified(self):
+    #     if self.view.file_name():
+    #         Events.publish("view.on_modified", self.view)
 
     def on_activated_async(self):
         if self.view.file_name():
