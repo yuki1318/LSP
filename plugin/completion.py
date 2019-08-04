@@ -255,13 +255,9 @@ class CompletionHandler(sublime_plugin.ViewEventListener):
                 self.state = CompletionState.REQUESTING
 
     def do_resolve(self, item) -> None:
-        view = self.view
-
-        client = client_for_view(view)
-        if not client:
-            return
-
-        client.send_request(Request.resolveCompletionItem(item), self.handle_resolve_response)
+        client = client_for_view(self.view)
+        if client:
+            client.send_request(Request.resolveCompletionItem(item), self.handle_resolve_response)
 
     def handle_resolve_response(self, response: 'Optional[Dict]') -> None:
         if response:

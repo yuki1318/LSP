@@ -1,6 +1,6 @@
 from .core.protocol import Request
 from .core.edit import parse_text_edit
-from .core.registry import client_for_view, LspTextCommand
+from .core.registry import LspTextCommand, requires, with_client
 from .core.types import ViewLike
 from .core.url import filename_to_uri
 from .core.views import region_to_range
@@ -28,45 +28,43 @@ class LspFormatDocumentCommand(LspTextCommand):
     def __init__(self, view):
         super().__init__(view)
 
-    def is_enabled(self, event=None):
-        return self.has_client_with_capability('documentFormattingProvider')
+    @requires('documentFormattingProvider')
+    def is_enabled(self):
+        return True
 
-    def run(self, edit):
-        client = client_for_view(self.view)
-        if client:
-            params = {
-                "textDocument": {
-                    "uri": filename_to_uri(self.view.file_name())
-                },
-                "options": options_for_view(self.view)
-            }
-            request = Request.formatting(params)
-            client.send_request(
-                request, lambda response: apply_response_to_view(response, self.view))
+    @with_client
+    def run(self, client, _):
+        params = {
+            "textDocument": {
+                "uri": filename_to_uri(self.view.file_name())
+            },
+            "options": options_for_view(self.view)
+        }
+        request = Request.formatting(params)
+        client.send_request(request, lambda response: apply_response_to_view(response, self.view))
 
 
 class LspFormatDocumentRangeCommand(LspTextCommand):
     def __init__(self, view):
         super().__init__(view)
 
+    @requires('documentRangeFormattingProvider')
     def is_enabled(self, event=None):
-        if self.has_client_with_capability('documentRangeFormattingProvider'):
-            if len(self.view.sel()) == 1:
-                region = self.view.sel()[0]
-                if region.begin() != region.end():
-                    return True
+        if len(self.view.sel()) == 1:
+            region = self.view.sel()[0]
+            if region.begin() != region.end():
+                return True
         return False
 
-    def run(self, _):
-        client = client_for_view(self.view)
-        if client:
-            region = self.view.sel()[0]
-            params = {
-                "textDocument": {
-                    "uri": filename_to_uri(self.view.file_name())
-                },
-                "range": region_to_range(self.view, region).to_lsp(),
-                "options": options_for_view(self.view)
-            }
-            client.send_request(Request.rangeFormatting(params),
-                                lambda response: apply_response_to_view(response, self.view))
+    @with_client
+    def run(self, client, _):
+        region = self.view.sel()[0]
+        params = {
+            "textDocument": {
+                "uri": filename_to_uri(self.view.file_name())
+            },
+            "range": region_to_range(self.view, region).to_lsp(),
+            "options": options_for_view(self.view)
+        }
+        client.send_request(Request.rangeFormatting(params),
+                            lambda response: apply_response_to_view(response, self.view))

@@ -5,7 +5,7 @@ import linecache
 from .core.documents import is_at_word, get_position, get_document_position
 from .core.panels import ensure_panel
 from .core.protocol import Request, Point
-from .core.registry import client_for_view, LspTextCommand
+from .core.registry import LspTextCommand, requires, with_client
 from .core.settings import PLUGIN_NAME, settings
 from .core.url import uri_to_filename
 from .core.workspace import get_project_path
@@ -27,23 +27,20 @@ class LspSymbolReferencesCommand(LspTextCommand):
         super().__init__(view)
         self.reflist = []  # type: List[List[str]]
 
+    @requires('referencesProvider')
     def is_enabled(self, event=None):
-        if self.has_client_with_capability('referencesProvider'):
-            return is_at_word(self.view, event)
-        return False
+        return is_at_word(self.view, event)
 
-    def run(self, edit, event=None):
-        client = client_for_view(self.view)
-        if client:
-            pos = get_position(self.view, event)
-            document_position = get_document_position(self.view, pos)
-            if document_position:
-                document_position['context'] = {
-                    "includeDeclaration": False
-                }
-                request = Request.references(document_position)
-                client.send_request(
-                    request, lambda response: self.handle_response(response, pos))
+    @with_client
+    def run(self, client, edit, event=None):
+        pos = get_position(self.view, event)
+        document_position = get_document_position(self.view, pos)
+        if document_position:
+            document_position['context'] = {
+                "includeDeclaration": False
+            }
+            request = Request.references(document_position)
+            client.send_request(request, lambda response: self.handle_response(response, pos))
 
     def handle_response(self, response: 'Optional[List[Dict]]', pos) -> None:
         window = self.view.window()

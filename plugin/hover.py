@@ -11,7 +11,7 @@ except ImportError:
 
 from .core.configurations import is_supported_syntax
 from .diagnostics import get_point_diagnostics
-from .core.registry import session_for_view, LspTextCommand
+from .core.registry import LspTextCommand, requires, with_client
 from .core.protocol import Request, DiagnosticSeverity
 from .core.documents import get_document_position
 from .core.popups import popup_css, popup_class
@@ -69,6 +69,10 @@ class LspHoverCommand(LspTextCommand):
     def __init__(self, view):
         super().__init__(view)
 
+    @requires('hoverProvider')
+    def is_enabled(self):
+        return True
+
     def is_likely_at_symbol(self, point):
         word_at_sel = self.view.classify(point)
         return word_at_sel & SUBLIME_WORD_MASK and not self.view.match_selector(point, NO_HOVER_SCOPES)
@@ -82,16 +86,12 @@ class LspHoverCommand(LspTextCommand):
         if point_diagnostics:
             self.show_hover(point, self.diagnostics_content(point_diagnostics))
 
-    def request_symbol_hover(self, point) -> None:
-        session = session_for_view(self.view, point)
-        if session:
-            if session.has_capability('hoverProvider'):
-                document_position = get_document_position(self.view, point)
-                if document_position:
-                    if session.client:
-                        session.client.send_request(
-                            Request.hover(document_position),
-                            lambda response: self.handle_response(response, point))
+    @with_client
+    def request_symbol_hover(self, client, point) -> None:
+        document_position = get_document_position(self.view, point)
+        if document_position:
+            client.send_request(Request.hover(document_position),
+                                lambda response: self.handle_response(response, point))
 
     def handle_response(self, response: 'Optional[Any]', point) -> None:
         all_content = ""

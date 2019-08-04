@@ -1,7 +1,7 @@
 import sublime_plugin
 import sublime
 from .core.protocol import Request
-from .core.registry import client_for_view, LspTextCommand
+from .core.registry import LspTextCommand, requires, with_client
 from .core.url import uri_to_filename
 from .symbols import format_symbol_kind
 import os
@@ -54,16 +54,17 @@ class LspWorkspaceSymbolsCommand(LspTextCommand):
         msg = "command 'workspace/symbol' failed. Reason: {}".format(reason)
         sublime.error_message(msg)
 
-    def is_enabled(self, event=None):
-        return self.has_client_with_capability('workspaceSymbolProvider')
+    @requires('workspaceSymbolProvider')
+    def is_enabled(self):
+        return True
 
     def input(self, args):
         return SymbolQueryInput()
 
-    def run(self, edit, symbol_query_input: str = "") -> None:
+    @with_client
+    def run(self, client, _, symbol_query_input: str = "") -> None:
         if symbol_query_input:
             request = Request.workspaceSymbol({"query": symbol_query_input})
-            client = client_for_view(self.view)
-            if client:
-                self.view.set_status("lsp_workspace_symbols", "Searching for '{}'...".format(symbol_query_input))
-                client.send_request(request, lambda r: self._handle_response(symbol_query_input, r), self._handle_error)
+            client = with_client(self.view)
+            self.view.set_status("lsp_workspace_symbols", "Searching for '{}'...".format(symbol_query_input))
+            client.send_request(request, lambda r: self._handle_response(symbol_query_input, r), self._handle_error)

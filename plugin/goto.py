@@ -1,6 +1,6 @@
 import sublime
 
-from .core.registry import client_for_view, LspTextCommand
+from .core.registry import LspTextCommand, with_client
 from .core.protocol import Request, Point
 from .core.documents import get_document_position, get_position, is_at_word
 from .core.url import uri_to_filename
@@ -26,19 +26,17 @@ class LspGotoCommand(LspTextCommand):
             return is_at_word(self.view, event)
         return False
 
-    def run(self, _, event=None) -> None:
-        client = client_for_view(self.view)
-        if client:
-            pos = get_position(self.view, event)
-            document_position = get_document_position(self.view, pos)
-            if document_position:
-                request_type = getattr(Request, self.goto_kind)
-                if not request_type:
-                    debug("unrecognized goto kind:", self.goto_kind)
-                    return
-                request = request_type(document_position)
-                client.send_request(
-                    request, lambda response: self.handle_response(response, pos))
+    @with_client
+    def run(self, client, _, event=None) -> None:
+        pos = get_position(self.view, event)
+        document_position = get_document_position(self.view, pos)
+        if document_position:
+            request_type = getattr(Request, self.goto_kind)
+            if not request_type:
+                debug("unrecognized goto kind:", self.goto_kind)
+                return
+            request = request_type(document_position)
+            client.send_request(request, lambda response: self.handle_response(response, pos))
 
     def handle_response(self, response: 'Optional[Any]', position) -> None:
         window = sublime.active_window()

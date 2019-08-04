@@ -7,7 +7,7 @@ try:
 except ImportError:
     pass
 
-from .core.registry import client_for_view, LspTextCommand
+from .core.registry import LspTextCommand, requires, with_client
 from .core.protocol import Request
 from .diagnostics import get_point_diagnostics
 from .core.edit import parse_workspace_edit
@@ -87,8 +87,10 @@ def is_command(command_or_code_action: dict) -> bool:
 
 
 class LspCodeActionsCommand(LspTextCommand):
+
+    @requires('codeActionProvider')
     def is_enabled(self):
-        return self.has_client_with_capability('codeActionProvider')
+        return True
 
     def run(self, edit):
         self.commands = []  # type: List[Dict]
@@ -128,12 +130,9 @@ class LspCodeActionsCommand(LspTextCommand):
                 if maybe_command:
                     self.run_command(maybe_command)
 
-    def run_command(self, command) -> None:
-        client = client_for_view(self.view)
-        if client:
-            client.send_request(
-                Request.executeCommand(command),
-                self.handle_command_response)
+    @with_client
+    def run_command(self, client, command) -> None:
+        client.send_request(Request.executeCommand(command), self.handle_command_response)
 
     def handle_command_response(self, response):
         pass

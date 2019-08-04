@@ -131,10 +131,10 @@ class Session(object):
         self.client = client
         self.initialize()
 
-    def has_capability(self, capability):
+    def has_capability(self, capability) -> bool:
         return capability in self.capabilities and self.capabilities[capability] is not False
 
-    def get_capability(self, capability):
+    def get_capability(self, capability) -> 'Optional[Any]':
         return self.capabilities.get(capability)
 
     def initialize(self):

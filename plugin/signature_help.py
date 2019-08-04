@@ -86,12 +86,12 @@ class SignatureHelpListener(sublime_plugin.ViewEventListener):
                 if last_char not in self._signature_help_triggers:
                     self.view.hide_popup()
 
-    def request_signature_help(self, point) -> None:
-        client = client_for_view(self.view)
-        if client:
-            global_events.publish("view.on_purge_changes", self.view)
-            document_position = get_document_position(self.view, point)
-            if document_position:
+    def request_signature_help(self, client, point) -> None:
+        global_events.publish("view.on_purge_changes", self.view)
+        document_position = get_document_position(self.view, point)
+        if document_position:
+            client = client_for_view(self.view)
+            if client:
                 client.send_request(
                     Request.signatureHelp(document_position),
                     lambda response: self.handle_response(response, point))

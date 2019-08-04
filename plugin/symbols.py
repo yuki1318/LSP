@@ -1,7 +1,7 @@
 from .core.logging import debug
 from .core.protocol import Request, Range
 from .core.protocol import SymbolKind
-from .core.registry import client_for_view, LspTextCommand
+from .core.registry import LspTextCommand, requires, with_client
 from .core.url import filename_to_uri
 from .core.views import range_to_region
 
@@ -59,19 +59,19 @@ class LspDocumentSymbolsCommand(LspTextCommand):
     def __init__(self, view):
         super().__init__(view)
 
-    def is_enabled(self, event=None):
-        return self.has_client_with_capability('documentSymbolProvider')
+    @requires('documentSymbolProvider')
+    def is_enabled(self):
+        return True
 
-    def run(self, edit) -> None:
-        client = client_for_view(self.view)
-        if client:
-            params = {
-                "textDocument": {
-                    "uri": filename_to_uri(self.view.file_name())
-                }
+    @with_client
+    def run(self, client, _) -> None:
+        params = {
+            "textDocument": {
+                "uri": filename_to_uri(self.view.file_name())
             }
-            request = Request.documentSymbols(params)
-            client.send_request(request, self.handle_response)
+        }
+        request = Request.documentSymbols(params)
+        client.send_request(request, self.handle_response)
 
     def handle_response(self, response: 'Optional[List]') -> None:
         response_list = response or []

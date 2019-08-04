@@ -1,5 +1,5 @@
 import sublime_plugin
-from .core.registry import client_for_view, LspTextCommand
+from .core.registry import LspTextCommand, requires, with_client
 from .core.protocol import Request
 from .core.edit import parse_workspace_edit
 from .core.documents import get_document_position, get_position, is_at_word
@@ -39,11 +39,10 @@ class LspSymbolRenameCommand(LspTextCommand):
     def __init__(self, view):
         super().__init__(view)
 
+    @requires('renameProvider')
     def is_enabled(self, event=None):
         # TODO: check what kind of scope we're in.
-        if self.has_client_with_capability('renameProvider'):
-            return is_at_word(self.view, event)
-        return False
+        return is_at_word(self.view, event)
 
     def input(self, args):
         if "new_name" not in args:
@@ -51,17 +50,14 @@ class LspSymbolRenameCommand(LspTextCommand):
         else:
             return None
 
-    def run(self, edit, new_name, event=None):
+    @with_client
+    def run(self, client, _, new_name, event=None):
         pos = get_position(self.view, event)
         params = get_document_position(self.view, pos)
-
-        self.request_rename(params, new_name)
-
-    def request_rename(self, params, new_name) -> None:
-        client = client_for_view(self.view)
-        if client:
-            params["newName"] = new_name
-            client.send_request(Request.rename(params), self.handle_response)
+        if not params:
+            return
+        params["newName"] = new_name
+        client.send_request(Request.rename(params), self.handle_response)
 
     def handle_response(self, response: 'Optional[Dict]') -> None:
         if response:

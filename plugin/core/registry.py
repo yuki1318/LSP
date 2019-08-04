@@ -1,5 +1,6 @@
 import sublime
 import sublime_plugin
+import functools
 from .windows import WindowRegistry, DocumentHandlerFactory
 from .configurations import (
     ConfigManager
@@ -17,6 +18,8 @@ from .settings import settings, client_configs
 try:
     from typing import Optional, List, Callable, Dict, Any
     assert Optional and List and Callable and Dict and Any and ClientConfig and Client and Session
+    ReturningBool = Callable[..., bool]
+    ReturningNone = Callable[..., None]
 except ImportError:
     pass
 
@@ -134,6 +137,32 @@ class LspTextCommand(sublime_plugin.TextCommand):
         if session and session.has_capability(capability):
             return True
         return False
+
+
+def requires(capability: str) -> 'Callable[[ReturningBool], ReturningBool]':
+
+    def decorator(f: 'ReturningBool') -> 'ReturningBool':
+
+        @functools.wraps(f)
+        def wrapper(self: 'LspTextCommand', *args, **kwargs) -> bool:
+            if self.has_client_with_capability(capability):
+                return f(self, *args, **kwargs)
+            return False
+
+        return wrapper
+
+    return decorator
+
+
+def with_client(f: 'ReturningNone') -> 'ReturningNone':
+
+    @functools.wraps(f)
+    def wrapper(self: 'LspTextCommand', *args, **kwargs) -> None:
+        client = client_for_view(self.view)
+        if client:
+            f(self, client, *args, **kwargs)
+
+    return wrapper
 
 
 class LspRestartClientCommand(sublime_plugin.TextCommand):
