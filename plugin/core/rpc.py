@@ -81,7 +81,7 @@ class Client(object):
         self._sync_request_lock = Lock()
         self._sync_request_cvar = Condition(self._sync_request_lock)
         self._sync_requesting = False
-        self._incoming_payloads = []
+        self._incoming_payloads = []  # type: List[dict]
         self.exiting = False
         self._crash_handler = None  # type: Optional[Callable]
         self._transport_fail_handler = None  # type: Optional[Callable]
