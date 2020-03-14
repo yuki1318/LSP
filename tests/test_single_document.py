@@ -241,6 +241,40 @@ class SingleDocumentTestCase(TextDocumentTestCase):
     def test_implementation_location_link(self) -> 'Generator':
         yield from self.__run_goto_test(GOTO_RESPONSE_LOCATION_LINK, 'implementation', 'implementation')
 
+    def test_dynamic_capabilities(self) -> 'Generator':
+        self.do_request("client/registerCapability", {
+            "registrations": [{
+                "id": "79eee87c-c409-4664-8102-e03263673f6f",
+                "method": "workspace/didChangeConfiguration",
+            }]
+        })
+        yield lambda: bool(self.session.dynamic_capabilities)
+        self.assertIn("79eee87c-c409-4664-8102-e03263673f6f", self.session.dynamic_capabilities)
+        self.assertTrue(self.session.dynamic_capabilities.has_value("workspace/didChangeConfiguration"))
+        self.do_request("client/unregisterCapability", {
+            "unregisterations": [{"id": "79eee87c-c409-4664-8102-e03263673f6f"}]
+        })
+        yield lambda: not bool(self.session.dynamic_capabilities)
+        with self.session.ready_lock:
+            self.assertFalse(self.session.should_notify_did_change_workspace_folders())
+        self.do_request("client/registerCapability", {
+            "registrations": [{
+                "id": "abcd",
+                "method": "workspace/didChangeWorkspaceFolders",
+            }]
+        })
+        yield lambda: bool(self.session.dynamic_capabilities)
+        self.assertIn("abcd", self.session.dynamic_capabilities)
+        self.assertTrue(self.session.dynamic_capabilities.has_value("workspace/didChangeWorkspaceFolders"))
+        with self.session.ready_lock:
+            self.assertTrue(self.session.should_notify_did_change_workspace_folders())
+        self.do_request("client/unregisterCapability", {
+            "unregisterations": [{"id": "abcd"}]
+        })
+        yield lambda: not bool(self.session.dynamic_capabilities)
+        with self.session.ready_lock:
+            self.assertFalse(self.session.should_notify_did_change_workspace_folders())
+
 
 # class WillSaveWaitUntilTestCase(TextDocumentTestCase):
 

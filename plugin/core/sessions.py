@@ -1,3 +1,4 @@
+from .bidict import BidirectionalDictionary
 from .logging import debug
 from .process import start_server
 from .protocol import completion_item_kinds, symbol_kinds, WorkspaceFolder, Request, Notification
@@ -22,6 +23,7 @@ def get_initialize_params(workspace_folders: List[WorkspaceFolder], designated_f
         "capabilities": {
             "textDocument": {
                 "synchronization": {
+                    "dynamicRegistration": True,
                     "didSave": True,
                     "willSave": True,
                     "willSaveWaitUntil": True
@@ -73,7 +75,9 @@ def get_initialize_params(workspace_folders: List[WorkspaceFolder], designated_f
             },
             "workspace": {
                 "applyEdit": True,
-                "didChangeConfiguration": {},
+                "didChangeConfiguration": {
+                    "dynamicRegistration": True
+                },
                 "executeCommand": {},
                 "workspaceFolders": True,
                 "symbol": {
@@ -125,6 +129,7 @@ class Session(object):
         self._on_post_initialize = on_post_initialize
         self._on_post_exit = on_post_exit
         self.capabilities = dict()  # type: Dict[str, Any]
+        self.dynamic_capabilities = BidirectionalDictionary()
         self.client = client
         self.ready_lock = threading.Lock()
         self._workspace_folders = workspace_folders
@@ -139,13 +144,16 @@ class Session(object):
     def get_capability(self, capability: str) -> Optional[Any]:
         return self.capabilities.get(capability)
 
-    def should_notify_did_open(self) -> bool:
+    def _should_notify_open_close(self, method: str) -> bool:
         textsync = self.capabilities.get('textDocumentSync')
         if isinstance(textsync, dict):
             return bool(textsync.get('openClose'))
         if isinstance(textsync, int):
             return textsync > TextDocumentSyncKindNone
-        return False
+        return self.dynamic_capabilities.has_value(method)
+
+    def should_notify_did_open(self) -> bool:
+        return self._should_notify_open_close('textDocument/didOpen')
 
     def text_sync_kind(self) -> int:
         textsync = self.capabilities.get('textDocumentSync')
@@ -164,13 +172,13 @@ class Session(object):
             return bool(textsync.get('willSave'))
         if isinstance(textsync, int):
             return textsync > TextDocumentSyncKindNone
-        return False
+        return self.dynamic_capabilities.has_value('textDocument/willSave')
 
     def should_request_will_save_wait_until(self) -> bool:
         textsync = self.capabilities.get('textDocumentSync')
         if isinstance(textsync, dict):
             return bool(textsync.get('willSaveWaitUntil'))
-        return False
+        return self.dynamic_capabilities.has_value('textDocument/willSaveWaitUntil')
 
     def should_notify_did_save(self) -> Tuple[bool, bool]:
         textsync = self.capabilities.get('textDocumentSync')
@@ -179,10 +187,15 @@ class Session(object):
             return True, bool(options.get('includeText')) if isinstance(options, dict) else False
         if isinstance(textsync, int):
             return textsync > TextDocumentSyncKindNone, False
-        return False, False
+        return self.dynamic_capabilities.has_value('textDocument/didSave'), False
 
     def should_notify_did_close(self) -> bool:
-        return self.should_notify_did_open()
+        return self._should_notify_open_close('textDocument/didClose')
+
+    def should_notify_did_change_workspace_folders(self) -> bool:
+        if self._unsafe_supports_workspace_folders():
+            return True
+        return self.dynamic_capabilities.has_value('workspace/didChangeWorkspaceFolders')
 
     @contextmanager
     def acquire_timeout(self) -> Generator[None, None, None]:
@@ -207,7 +220,7 @@ class Session(object):
 
     def update_folders(self, folders: List[WorkspaceFolder]) -> None:
         with self.acquire_timeout():
-            if self._unsafe_supports_workspace_folders():
+            if self.should_notify_did_change_workspace_folders():
                 added, removed = diff_folders(self._workspace_folders, folders)
                 params = {
                     "event": {
@@ -266,6 +279,8 @@ class Session(object):
 
         self.on_request("workspace/workspaceFolders", self._handle_request_workspace_folders)
         self.on_request("workspace/configuration", self._handle_request_workspace_configuration)
+        self.on_request("client/registerCapability", self._handle_register_capability)
+        self.on_request("client/unregisterCapability", self._handle_unregister_capability)
         if self.config.settings:
             self.client.send_notification(Notification.didChangeConfiguration({'settings': self.config.settings}))
 
@@ -281,6 +296,19 @@ class Session(object):
         for requested_item in requested_items:
             items.append(self.config.settings)  # ???
         self.client.send_response(Response(request_id, items))
+
+    def _handle_register_capability(self, params: Any, request_id: Any) -> None:
+        registrations = params["registrations"]
+        for registration in registrations:
+            # TODO: use the registerOptions
+            self.dynamic_capabilities[registration["id"]] = registration["method"]
+        self.client.send_response(Response(request_id, None))
+
+    def _handle_unregister_capability(self, params: Any, request_id: Any) -> None:
+        unregistrations = params["unregisterations"]  # typo in the official specification
+        for unregistration in unregistrations:
+            self.dynamic_capabilities.pop(unregistration["id"], None)
+        self.client.send_response(Response(request_id, None))
 
     def end(self) -> None:
         self.client.send_request(

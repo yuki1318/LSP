@@ -202,6 +202,11 @@ class TextDocumentTestCase(DeferrableTestCase):
         self.session.client.send_notification(
             Notification("$test/setResponse", {"method": method, "response": response}))
 
+    def do_request(self, method: str, params: 'Any') -> None:
+        assert self.session  # mypy
+        self.session.client.send_notification(
+            Notification("$test/doRequest", {"method": method, "params": params}))
+
     def await_boilerplate_begin(self) -> 'Generator':
         yield from self.await_message("initialize")
         yield from self.await_message("initialized")

@@ -5,6 +5,7 @@ Only understands stdio.
 Uses the asyncio module and mypy types, so you'll need a modern Python.
 
 To make this server reply to requests, send the $test/setResponse notification.
+To make this server do a request itself, send the $test/doRequest notification.
 
 To await a method that this server should eventually (or already has) received,
 send the $test/getReceived request. If the method was already received, it will
@@ -88,7 +89,7 @@ def make_notification(method: str, params: PayloadLike) -> StringDict:
     return {**jsonrpc(), "method": method, "params": params}
 
 
-def make_request(method: str, request_id: int, params: PayloadLike) -> StringDict:
+def make_request(method: str, request_id: Any, params: PayloadLike) -> StringDict:
     return {**jsonrpc(), "method": method, "id": request_id, "params": params}
 
 
@@ -128,7 +129,8 @@ class Session:
         self._reader = reader
         self._writer = writer
 
-        self._response_handlers: Dict[int, Tuple[Callable, Callable]]
+        self._request_id = 0
+        self._response_handlers: Dict[int, Tuple[Callable, Callable]] = {}
         self._request_handlers: Dict[str,
                                      Callable[[PayloadLike], PayloadLike]] = {}
         self._notification_handlers: Dict[str,
@@ -159,6 +161,46 @@ class Session:
     def _error(self, request_id: int, err: Error) -> None:
         asyncio.get_event_loop().create_task(self._send_payload(
             make_error_response(request_id, err)))
+
+    def _request(self, method: str, request_id: Any, params: PayloadLike) -> None:
+        asyncio.get_event_loop().create_task(self._send_payload(
+            make_request(method, request_id, params)))
+
+    async def request(self, method: str, params: PayloadLike) -> PayloadLike:
+        self._request_id += 1
+        cv = asyncio.Condition()
+        has_result = False
+        result = None  # type: Optional[PayloadLike]
+        error = None  # type: Optional[PayloadLike]
+
+        async def handle_response(response: PayloadLike) -> None:
+            nonlocal has_result
+            nonlocal result
+            has_result = True
+            result = response
+            async with cv:
+                cv.notify()
+
+        async def handle_error(err: PayloadLike) -> None:
+            nonlocal error
+            error = err
+            async with cv:
+                cv.notify()
+
+        self._log("b")
+        self._response_handlers[self._request_id] = (handle_response, handle_error)
+        async with cv:
+            self._log("c")
+            self._request(method, self._request_id, params)
+            self._log("d")
+            await cv.wait()
+        if has_result:
+            self._log("e")
+            return result
+        else:
+            self._log("f")
+            assert isinstance(error, dict)
+            raise Error(error["code"], error["message"])
 
     async def _send_payload(self, payload: StringDict) -> None:
         body = dump(payload)
@@ -287,10 +329,20 @@ class Session:
 
         self._on_request("$test/getReceived", self._get_received)
         self._on_notification("$test/setResponse", self._on_set_response)
+        self._on_notification("$test/doRequest", self._on_do_request)
 
     async def _on_set_response(self, params: PayloadLike) -> None:
         if isinstance(params, dict):
             self._responses[params["method"]] = params["response"]
+
+    async def _on_do_request(self, params: PayloadLike) -> None:
+        if isinstance(params, dict):
+            method = params["method"]
+            fake_params = params["params"]
+            delay = params.get("delay", 0)
+            await asyncio.sleep(delay)
+            self._log("a")
+            await self.request(method, fake_params)
 
     async def _get_received(self, params: PayloadLike) -> PayloadLike:
         if not isinstance(params, dict):
