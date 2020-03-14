@@ -187,18 +187,13 @@ class Session:
             async with cv:
                 cv.notify()
 
-        self._log("b")
         self._response_handlers[self._request_id] = (handle_response, handle_error)
         async with cv:
-            self._log("c")
             self._request(method, self._request_id, params)
-            self._log("d")
             await cv.wait()
         if has_result:
-            self._log("e")
             return result
         else:
-            self._log("f")
             assert isinstance(error, dict)
             raise Error(error["code"], error["message"])
 
@@ -341,7 +336,6 @@ class Session:
             fake_params = params["params"]
             delay = params.get("delay", 0)
             await asyncio.sleep(delay)
-            self._log("a")
             await self.request(method, fake_params)
 
     async def _get_received(self, params: PayloadLike) -> PayloadLike:
