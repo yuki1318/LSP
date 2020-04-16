@@ -3,7 +3,7 @@ import sublime_plugin
 
 from .core.configurations import is_supported_syntax
 from .core.protocol import Request, Range, DocumentHighlightKind
-from .core.registry import session_for_view, client_from_session
+from .core.registry import session_for_view
 from .core.settings import settings, client_configs
 from .core.typing import List, Dict, Optional
 from .core.views import range_to_region, text_document_position_params
@@ -79,11 +79,11 @@ class DocumentHighlightListener(sublime_plugin.ViewEventListener):
         if word_at_sel & SUBLIME_WORD_MASK:
             if self.view.match_selector(point, NO_HIGHLIGHT_SCOPES):
                 return
-            client = client_from_session(session_for_view(self.view, "documentHighlightProvider"))
-            if client:
+            session = session_for_view(self.view, "documentHighlightProvider")
+            if session:
                 params = text_document_position_params(self.view, point)
                 request = Request.documentHighlight(params)
-                client.send_request(request, self._handle_response)
+                session.send_request(request, self._handle_response)
 
     def _handle_response(self, response: Optional[List]) -> None:
         if not response:

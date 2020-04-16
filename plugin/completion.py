@@ -5,7 +5,7 @@ from .core.configurations import is_supported_syntax
 from .core.edit import parse_text_edit
 from .core.logging import debug
 from .core.protocol import Request, InsertTextFormat
-from .core.registry import session_for_view, client_from_session, LSPViewEventListener
+from .core.registry import session_for_view, LSPViewEventListener
 from .core.sessions import Session
 from .core.settings import settings, client_configs
 from .core.typing import Any, List, Dict, Optional, Union, Iterable, Tuple
@@ -95,15 +95,10 @@ class LspSelectCompletionItemCommand(sublime_plugin.TextCommand):
         session = session_for_view(self.view, 'completionProvider', self.view.sel()[0].begin())
         if not session:
             return
-
-        client = client_from_session(session)
-        if not client:
-            return
-
         completion_provider = session.get_capability('completionProvider')
         has_resolve_provider = completion_provider and completion_provider.get('resolveProvider', False)
         if has_resolve_provider:
-            client.send_request(Request.resolveCompletionItem(item), self.handle_resolve_response)
+            session.send_request(Request.resolveCompletionItem(item), self.handle_resolve_response)
 
     def handle_resolve_response(self, response: Optional[dict]) -> None:
         if response:
@@ -174,13 +169,13 @@ class CompletionHandler(LSPViewEventListener):
             self.initialize()
         if not self.enabled:
             return None
-        client = client_from_session(session_for_view(self.view, 'completionProvider', locations[0]))
-        if not client:
+        session = session_for_view(self.view, 'completionProvider', locations[0])
+        if not session:
             return None
         self.manager.documents.purge_changes(self.view)
         completion_list = sublime.CompletionList()
         self._request_in_flight = True
-        client.send_request(
+        session.send_request(
             Request.complete(text_document_position_params(self.view, locations[0])),
             lambda res: self.handle_response(res, completion_list),
             lambda res: self.handle_error(res, completion_list))

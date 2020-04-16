@@ -88,6 +88,10 @@ def did_open_text_document_params(view: sublime.View, language_id: str) -> Dict[
     return {"textDocument": text_document_item(view, language_id)}
 
 
+def document_color_params(view: sublime.View) -> Dict[str, Any]:
+    return {"textDocument": text_document_identifier(view)}
+
+
 def render_text_change(change: sublime.TextChange) -> Dict[str, Any]:
     # Note: cannot use protocol.Range because these are "historic" points.
     return {

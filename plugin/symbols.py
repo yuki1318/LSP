@@ -60,7 +60,7 @@ class LspDocumentSymbolsCommand(LspTextCommand):
         return self.has_client_with_capability('documentSymbolProvider')
 
     def run(self, edit: sublime.Edit) -> None:
-        client = self.client_with_capability('documentSymbolProvider')
+        client = self.session_with_capability('documentSymbolProvider')
         file_path = self.view.file_name()
         if client and file_path:
             params = {

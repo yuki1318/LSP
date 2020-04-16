@@ -4,11 +4,10 @@ from .core.configurations import is_supported_syntax
 from .core.documents import is_transient_view
 from .core.protocol import Range
 from .core.protocol import Request
-from .core.registry import session_for_view, sessions_for_view, client_from_session, configs_for_scope
+from .core.registry import session_for_view, sessions_for_view, configs_for_scope
 from .core.settings import settings, client_configs
 from .core.typing import Any, List, Dict, Optional
-from .core.url import filename_to_uri
-from .core.views import range_to_region
+from .core.views import range_to_region, document_color_params
 
 
 color_phantoms_by_view = dict()  # type: Dict[int, sublime.PhantomSet]
@@ -74,19 +73,9 @@ class LspColorListener(sublime_plugin.ViewEventListener):
         if is_transient_view(self.view):
             return
 
-        client = client_from_session(session_for_view(self.view, 'colorProvider'))
-        if client:
-            file_path = self.view.file_name()
-            if file_path:
-                params = {
-                    "textDocument": {
-                        "uri": filename_to_uri(file_path)
-                    }
-                }
-                client.send_request(
-                    Request.documentColor(params),
-                    self.handle_response
-                )
+        session = session_for_view(self.view, 'colorProvider')
+        if session:
+            session.send_request(Request.documentColor(document_color_params(self.view)), self.handle_response)
 
     def handle_response(self, response: Optional[List[dict]]) -> None:
         color_infos = response if response else []

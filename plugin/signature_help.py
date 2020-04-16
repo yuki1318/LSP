@@ -6,7 +6,7 @@ import webbrowser
 from .core.configurations import is_supported_syntax
 from .core.popups import popups
 from .core.protocol import Request
-from .core.registry import session_for_view, client_from_session, LSPViewEventListener
+from .core.registry import session_for_view, LSPViewEventListener
 from .core.settings import client_configs, settings
 from .core.signature_help import create_signature_help, SignatureHelp
 from .core.typing import List, Dict, Optional
@@ -94,11 +94,11 @@ class SignatureHelpListener(LSPViewEventListener):
 
     def request_signature_help(self, point: int) -> None:
         self.requested_position = point
-        client = client_from_session(session_for_view(self.view, 'signatureHelpProvider', point))
-        if client:
+        session = session_for_view(self.view, 'signatureHelpProvider', point)
+        if session:
             self.manager.documents.purge_changes(self.view)
             document_position = text_document_position_params(self.view, point)
-            client.send_request(
+            session.send_request(
                 Request.signatureHelp(document_position),
                 lambda response: self.handle_response(response, point))
 

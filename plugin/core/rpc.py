@@ -1,27 +1,14 @@
 from .logging import debug, exception_log
 from .protocol import Request, Notification, Response, Error, ErrorCode
-from .transports import StdioTransport, Transport
-from .types import Settings
+from .transports import create_transport, JsonRpcTransport, TransportCallbacks
+from .types import ClientConfig, Settings
 from .typing import Any, Dict, Tuple, Callable, Optional, Mapping
 from threading import Condition
 from threading import Lock
-import subprocess
-import json
+import sublime
 
 TCP_CONNECT_TIMEOUT = 5
 DEFAULT_SYNC_REQUEST_TIMEOUT = 1.0
-
-
-def format_request(payload: Dict[str, Any]) -> str:
-    """Converts the request into json"""
-    return json.dumps(payload, sort_keys=False, check_circular=False, separators=(',', ':'))
-
-
-def try_terminate_process(process: subprocess.Popen) -> None:
-    try:
-        process.terminate()
-    except ProcessLookupError:
-        pass  # process can be terminated already
 
 
 class PreformattedPayloadLogger:
@@ -100,22 +87,16 @@ class PreformattedPayloadLogger:
         self.log(self.format_notification(direction, method), params, self.settings.log_payloads)
 
 
-class Client(object):
-    def __init__(self, transport: Transport, settings: Settings) -> None:
-        self.transport = transport  # type: Optional[Transport]
-        self.transport.start(self.receive_payload, self.on_transport_closed)
+class Client(TransportCallbacks):
+    def __init__(self, config: ClientConfig, cwd: str, window: sublime.Window, settings: Settings) -> None:
+        self.transport = create_transport(config, cwd, window, self)  # type: Optional[JsonRpcTransport]
         self.request_id = 0  # Our request IDs are always integers.
-        self.logger = PreformattedPayloadLogger(settings, "server", debug)
+        self.logger = PreformattedPayloadLogger(settings, config.name, debug)
         self._response_handlers = {}  # type: Dict[int, Tuple[Optional[Callable], Optional[Callable[[Any], None]]]]
-        self._request_handlers = {}  # type: Dict[str, Callable]
-        self._notification_handlers = {}  # type: Dict[str, Callable]
         self._sync_request_results = {}  # type: Dict[int, Optional[Any]]
         self._sync_request_lock = Lock()
         self._sync_request_cvar = Condition(self._sync_request_lock)
         self.exiting = False
-        self._crash_handler = None  # type: Optional[Callable]
-        self._transport_fail_handler = None  # type: Optional[Callable]
-        self._error_display_handler = lambda msg: debug(msg)
 
     def send_request(
             self,
@@ -124,24 +105,14 @@ class Client(object):
             error_handler: Optional[Callable[[Any], None]] = None,
     ) -> None:
         self.request_id += 1
-        if self.transport is not None:
-            self.logger.outgoing_request(self.request_id, request.method, request.params, blocking=False)
-            self._response_handlers[self.request_id] = (handler, error_handler)
-            self.send_payload(request.to_payload(self.request_id))
-        else:
-            debug('unable to send', request.method)
-            if error_handler is not None:
-                error_handler(None)
-            return None
+        self.logger.outgoing_request(self.request_id, request.method, request.params, blocking=False)
+        self._response_handlers[self.request_id] = (handler, error_handler)
+        self.send_payload(request.to_payload(self.request_id))
 
     def execute_request(self, request: Request, timeout: float = DEFAULT_SYNC_REQUEST_TIMEOUT) -> Optional[Any]:
         """
         Sends a request and waits for response up to timeout (default: 1 second), blocking the current thread.
         """
-        if self.transport is None:
-            debug('unable to send', request.method)
-            return None
-
         self.request_id += 1
         request_id = self.request_id
         self.logger.outgoing_request(request_id, request.method, request.params, blocking=True)
@@ -158,11 +129,8 @@ class Client(object):
         return result
 
     def send_notification(self, notification: Notification) -> None:
-        if self.transport is not None:
-            self.logger.outgoing_notification(notification.method, notification.params)
-            self.send_payload(notification.to_payload())
-        else:
-            debug('unable to send', notification.method)
+        self.logger.outgoing_notification(notification.method, notification.params)
+        self.send_payload(notification.to_payload())
 
     def send_response(self, response: Response) -> None:
         self.logger.outgoing_response(response.request_id, response.result)
@@ -175,54 +143,30 @@ class Client(object):
     def exit(self) -> None:
         self.exiting = True
         self.send_notification(Notification.exit())
-
-    def set_crash_handler(self, handler: Callable) -> None:
-        self._crash_handler = handler
-
-    def set_error_display_handler(self, handler: Callable) -> None:
-        self._error_display_handler = handler
-
-    def set_transport_failure_handler(self, handler: Callable) -> None:
-        self._transport_fail_handler = handler
-
-    def handle_transport_failure(self) -> None:
-        debug('transport failed')
-        self.transport = None
-        if self._transport_fail_handler is not None:
-            self._transport_fail_handler()
-        if self._crash_handler is not None:
-            self._crash_handler()
+        try:
+            self.transport.close()  # type: ignore
+        except AttributeError:
+            pass
 
     def send_payload(self, payload: Dict[str, Any]) -> None:
-        if self.transport:
-            message = format_request(payload)
-            self.transport.send(message)
-
-    def receive_payload(self, message: str) -> None:
-        payload = None
         try:
-            payload = json.loads(message)
-            # limit = min(len(message), 200)
-            # debug("got json: ", message[0:limit], "...")
-        except IOError as err:
-            exception_log("got a non-JSON payload: " + message, err)
-            return
+            self.transport.send(payload)  # type: ignore
+        except AttributeError:
+            pass
 
-        try:
-            if "method" in payload:
-                self.request_or_notification_handler(payload)
-            elif "id" in payload:
-                self.response_handler(payload)
-            else:
-                debug("Unknown payload type: ", payload)
-        except Exception as err:
-            exception_log("Error handling server payload", err)
+    def on_payload(self, payload: Dict[str, Any]) -> None:
+        if "method" in payload:
+            self.request_or_notification_handler(payload)
+        elif "id" in payload:
+            self.response_handler(payload)
+        else:
+            debug("Unknown payload type: ", payload)
 
-    def on_transport_closed(self) -> None:
-        self._error_display_handler("Communication to server closed, exiting")
-        # Differentiate between normal exit and server crash?
-        if not self.exiting:
-            self.handle_transport_failure()
+    def on_stderr_message(self, message: str) -> None:
+        pass
+
+    def on_transport_close(self, exit_code: int, exception: Optional[Exception]) -> None:
+        self.transport = None
 
     def response_handler(self, response: Dict[str, Any]) -> None:
         # This response handler *must not* run from the same thread that does a sync request
@@ -249,21 +193,15 @@ class Client(object):
         else:
             debug('invalid response payload', response)
 
-    def on_request(self, request_method: str, handler: Callable) -> None:
-        self._request_handlers[request_method] = handler
-
-    def on_notification(self, notification_method: str, handler: Callable) -> None:
-        self._notification_handlers[notification_method] = handler
-
     def request_or_notification_handler(self, payload: Mapping[str, Any]) -> None:
         method = payload["method"]  # type: str
+        handler = getattr(self, 'm_{}'.format(method.replace('/', '_').replace('$', '_')), None)
         params = payload.get("params")
         # Server request IDs can be either a string or an int.
         request_id = payload.get("id")
         if request_id is not None:
-            handler = self._request_handlers.get(method)
             self.logger.incoming_request(request_id, method, params)
-            if handler:
+            if callable(handler):
                 try:
                     handler(params, request_id)
                 except Error as error:
@@ -276,8 +214,7 @@ class Client(object):
             else:
                 self.send_error_response(request_id, Error(ErrorCode.MethodNotFound, method))
         else:
-            handler = self._notification_handlers.get(method)
-            if handler:
+            if callable(handler):
                 try:
                     handler(params)
                     self.logger.incoming_notification(method, params, unhandled=False)
@@ -286,10 +223,3 @@ class Client(object):
                     self.logger.incoming_notification(method, params, unhandled=True)
             else:
                 self.logger.incoming_notification(method, params, unhandled=True)
-
-
-def attach_stdio_client(process: subprocess.Popen, settings: Settings) -> Client:
-    transport = StdioTransport(process)
-    client = Client(transport, settings)
-    client.set_transport_failure_handler(lambda: try_terminate_process(process))
-    return client

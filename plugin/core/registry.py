@@ -1,6 +1,5 @@
 import sublime
 import sublime_plugin
-from .clients import start_window_config
 from .configurations import ConfigManager, is_supported_syntax
 from .handlers import LanguageHandler
 from .logging import debug
@@ -8,7 +7,7 @@ from .rpc import Client
 from .sessions import Session
 from .settings import settings, client_configs
 from .types import ClientConfig, ClientStates, WindowLike
-from .windows import WindowRegistry, DocumentHandlerFactory, WindowManager
+from .windows import WindowRegistry, DocumentHandlerFactory, WindowManager, LanguageHandlerListener
 from .typing import Optional, Callable, Dict, Any, Iterable
 
 
@@ -41,7 +40,7 @@ class LSPViewEventListener(sublime_plugin.ViewEventListener):
         return self._manager is not None
 
 
-class LanguageHandlerDispatcher(object):
+class LanguageHandlerDispatcher(LanguageHandlerListener):
 
     def on_start(self, config_name: str, window: WindowLike) -> bool:
         if config_name in client_start_listeners:
@@ -49,9 +48,10 @@ class LanguageHandlerDispatcher(object):
         else:
             return True
 
-    def on_initialized(self, config_name: str, window: WindowLike, client: Client) -> None:
+    def on_initialized(self, window: WindowLike, session: Session) -> None:
+        config_name = session.config.name
         if config_name in client_initialization_listeners:
-            client_initialization_listeners[config_name](client)
+            client_initialization_listeners[config_name](window, session)
 
 
 def load_handlers() -> None:
@@ -67,10 +67,6 @@ def register_language_handler(handler: LanguageHandler) -> None:
         client_start_listeners[handler.name] = handler.on_start
     if handler.on_initialized:
         client_initialization_listeners[handler.name] = handler.on_initialized
-
-
-def client_from_session(session: Optional[Session]) -> Optional[Client]:
-    return session.client if session else None
 
 
 def sessions_for_view(view: sublime.View, point: Optional[int] = None) -> Iterable[Session]:
@@ -111,7 +107,7 @@ configs = ConfigManager(client_configs.all)
 client_configs.set_listener(configs.update)
 documents = DocumentHandlerFactory(sublime, settings)
 handlers_dispatcher = LanguageHandlerDispatcher()
-windows = WindowRegistry(configs, documents, start_window_config, sublime, handlers_dispatcher)
+windows = WindowRegistry(configs, documents, sublime, handlers_dispatcher)
 
 
 def configs_for_scope(view: Any, point: Optional[int] = None) -> Iterable[ClientConfig]:
@@ -140,8 +136,8 @@ class LspTextCommand(sublime_plugin.TextCommand):
     def has_client_with_capability(self, capability: str) -> bool:
         return session_for_view(self.view, capability) is not None
 
-    def client_with_capability(self, capability: str) -> Optional[Client]:
-        return client_from_session(session_for_view(self.view, capability))
+    def session_with_capability(self, capability: str) -> Optional[Session]:
+        return session_for_view(self.view, capability)
 
 
 class LspRestartClientCommand(sublime_plugin.TextCommand):

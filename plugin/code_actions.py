@@ -4,7 +4,7 @@ from .core.edit import parse_workspace_edit
 from .core.protocol import Diagnostic
 from .core.protocol import Request, Point
 from .core.registry import LspTextCommand
-from .core.registry import sessions_for_view, client_from_session
+from .core.registry import sessions_for_view
 from .core.settings import settings
 from .core.typing import Any, List, Dict, Callable, Optional, Union, Tuple, Mapping, TypedDict
 from .core.url import filename_to_uri
@@ -96,10 +96,9 @@ def request_code_actions_with_diagnostics(view: sublime.View, diagnostics_by_con
                             "diagnostics": list(diagnostic.to_lsp() for diagnostic in point_diagnostics)
                         }
                     }
-                    if session.client:
-                        session.client.send_request(
-                            Request.codeAction(params),
-                            actions_at_location.collect(session.config.name))
+                    session.send_request(
+                        Request.codeAction(params),
+                        actions_at_location.collect(session.config.name))
     return actions_at_location
 
 
@@ -152,11 +151,8 @@ def is_command(command_or_code_action: CodeActionOrCommand) -> bool:
 
 def execute_server_command(view: sublime.View, config_name: str, command: Mapping[str, Any]) -> None:
     session = next((session for session in sessions_for_view(view) if session.config.name == config_name), None)
-    client = client_from_session(session)
-    if client:
-        client.send_request(
-            Request.executeCommand(command),
-            handle_command_response)
+    if session:
+        session.send_request(Request.executeCommand(command), handle_command_response)
 
 
 def handle_command_response(response: 'None') -> None:

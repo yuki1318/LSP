@@ -33,9 +33,9 @@ class LspSymbolReferencesCommand(LspTextCommand):
         return False
 
     def run(self, edit: sublime.Edit, event: Optional[dict] = None) -> None:
-        client = self.client_with_capability('referencesProvider')
+        session = self.session_with_capability('referencesProvider')
         file_path = self.view.file_name()
-        if client and file_path:
+        if session and file_path:
             pos = get_position(self.view, event)
             window = self.view.window()
             self.word_region = self.view.word(pos)
@@ -50,7 +50,7 @@ class LspSymbolReferencesCommand(LspTextCommand):
             document_position = text_document_position_params(self.view, pos)
             document_position['context'] = {"includeDeclaration": False}
             request = Request.references(document_position)
-            client.send_request(request, lambda response: self.handle_response(response, pos))
+            session.send_request(request, lambda response: self.handle_response(response, pos))
 
     def handle_response(self, response: Optional[List[ReferenceDict]], pos: int) -> None:
         window = self.view.window()
