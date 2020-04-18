@@ -20,7 +20,10 @@ class Manager(metaclass=ABCMeta):
 
     @abstractmethod
     def window(self) -> sublime.Window:
-        raise NotImplementedError()
+        """
+        Get the window associated with this manager.
+        """
+        pass
 
     @abstractmethod
     def sessions(self, view: sublime.View, capability: Optional[str] = None) -> 'Generator[Session]':
