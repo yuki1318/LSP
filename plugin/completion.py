@@ -6,7 +6,6 @@ from .core.edit import parse_text_edit
 from .core.logging import debug
 from .core.protocol import Request, InsertTextFormat
 from .core.registry import session_for_view, LSPViewEventListener
-from .core.sessions import Session
 from .core.settings import settings, client_configs
 from .core.typing import Any, List, Dict, Optional, Union, Iterable, Tuple
 from .core.views import text_document_position_params

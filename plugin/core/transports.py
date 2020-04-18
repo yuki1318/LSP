@@ -1,4 +1,4 @@
-from .logging import exception_log
+from .logging import exception_log, debug
 from .types import ClientConfig
 from .typing import Dict, Any, Optional, IO, Protocol
 from abc import ABCMeta, abstractmethod
@@ -216,6 +216,7 @@ def create_transport(config: ClientConfig, cwd: str, window: sublime.Window,
                     break
     else:
         startupinfo = None
+    debug("starting process in", cwd)
     process = subprocess.Popen(
         args=args,
         stdin=stdin,

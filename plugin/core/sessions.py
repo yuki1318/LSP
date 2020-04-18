@@ -3,10 +3,61 @@ from .protocol import completion_item_kinds, symbol_kinds, WorkspaceFolder, Requ
 from .protocol import TextDocumentSyncKindNone
 from .rpc import Client
 from .types import ClientConfig, ClientStates, Settings
-from .typing import Dict, Any, Optional, List, Tuple
-from .workspace import is_subpath_of, get_workspace_folders
-import weakref
+from .typing import Dict, Any, Optional, List, Tuple, Generator
+from .workspace import is_subpath_of
+from abc import ABCMeta, abstractmethod
 import os
+import weakref
+import sublime
+
+
+class Manager(metaclass=ABCMeta):
+    """
+    A Manager is a container of Sessions.
+    """
+
+    # Observers
+
+    @abstractmethod
+    def window(self) -> sublime.Window:
+        raise NotImplementedError()
+
+    @abstractmethod
+    def sessions(self, view: sublime.View, capability: Optional[str] = None) -> 'Generator[Session]':
+        """
+        Iterate over the sessions stored in this manager, applicable to the given view, with the given capability.
+        """
+        pass
+
+    # Mutators
+
+    @abstractmethod
+    def start(self, configuration: ClientConfig, initiating_view: sublime.View) -> None:
+        """
+        Start a new Session with the given configuration. The initiating view is the view that caused this method to
+        be called.
+
+        A normal flow of calls would be start -> on_post_initialize -> do language server things -> on_post_exit.
+        However, it is possible that the subprocess cannot start, in which case on_post_initialize will never be called.
+        """
+        pass
+
+    # Event callbacks
+
+    @abstractmethod
+    def on_post_exit(self, session: 'Session', exit_code: int, exception: Optional[Exception]) -> None:
+        """
+        The given Session has stopped with the given exit code.
+        """
+        pass
+
+    @abstractmethod
+    def on_post_initialize(self, session: 'Session') -> None:
+        """
+        The language server returned a response from the initialize request. The response is stored in
+        session.capabilities.
+        """
+        pass
 
 
 def get_initialize_params(workspace_folders: List[WorkspaceFolder], config: ClientConfig) -> dict:
@@ -116,13 +167,14 @@ def get_dotted_value(current: Any, dotted: str) -> Any:
 
 
 class Session(Client):
-    def __init__(self, window_manager: Any, settings: Settings, cwd: str, config: ClientConfig) -> None:
+    def __init__(self, manager: Manager, settings: Settings, workspace_folders: List[WorkspaceFolder],
+                 config: ClientConfig) -> None:
         self.config = config
-        self.manager = weakref.ref(window_manager)
+        self.manager = weakref.ref(manager)
         self.state = ClientStates.STARTING
         self.capabilities = dict()  # type: Dict[str, Any]
-        self._workspace_folders = get_workspace_folders(window_manager._workspace.folders)
-        super().__init__(config, cwd, window_manager._window, settings)
+        self._workspace_folders = workspace_folders
+        super().__init__(config, workspace_folders[0].path, manager.window(), settings)
 
     def has_capability(self, capability: str) -> bool:
         return capability in self.capabilities and self.capabilities[capability] is not False
@@ -234,8 +286,9 @@ class Session(Client):
 
         if self.config.settings:
             self.send_notification(Notification.didChangeConfiguration({'settings': self.config.settings}))
-
-        self.call_manager('on_post_initialize', self)
+        mgr = self.manager()
+        if mgr:
+            mgr.on_post_initialize(self)
 
     def m_window_showMessageRequest(self, params: Any, request_id: Any) -> None:
         """handles the window/showMessageRequest request"""
@@ -276,7 +329,7 @@ class Session(Client):
         """handles textDocument/publishDiagnostics notification"""
         mgr = self.manager()
         if mgr:
-            mgr.diagnostics.receive(self.config.name, params)
+            mgr.diagnostics.receive(self.config.name, params)  # type: ignore
 
     def end(self) -> None:
         debug("stopping", self.config.name, "gracefully")
@@ -290,8 +343,6 @@ class Session(Client):
     def on_transport_close(self, exit_code: int, exception: Optional[Exception]) -> None:
         super().on_transport_close(exit_code, exception)
         debug("stopped", self.config.name, "exit code", exit_code)
-        self.call_manager('on_post_exit', self, exit_code, exception)
-
-
-def create_session(window_manager: Any, settings: Settings, cwd: str, config: ClientConfig) -> Session:
-    return Session(window_manager, settings, cwd, config)
+        mgr = self.manager()
+        if mgr:
+            mgr.on_post_exit(self, exit_code, exception)

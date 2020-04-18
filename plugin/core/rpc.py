@@ -189,7 +189,7 @@ class Client(TransportCallbacks):
             if error_handler:
                 error_handler(error)
             else:
-                self._error_display_handler(error.get("message"))
+                raise Error(error["code"], error["message"], error.get("data"))
         else:
             debug('invalid response payload', response)
 
