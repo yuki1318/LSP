@@ -83,6 +83,8 @@ def update_settings(settings: Settings, settings_obj: sublime.Settings) -> None:
     settings.log_server = read_bool_setting(settings_obj, "log_server", True)
     settings.log_stderr = read_bool_setting(settings_obj, "log_stderr", False)
     settings.log_payloads = read_bool_setting(settings_obj, "log_payloads", False)
+    settings.auto_restart = read_bool_setting(settings_obj, "auto_restart", False)
+    settings.origin_encoding = read_str_setting(settings_obj, "origin_encoding", "UTF-8")
 
 
 class ClientConfigs(object):
