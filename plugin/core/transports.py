@@ -6,6 +6,7 @@ from queue import Queue
 import subprocess
 from .logging import exception_log, debug
 from .types import Settings
+import traceback
 
 try:
 	from typing import Callable, Dict, Any, Optional, IO
@@ -276,6 +277,7 @@ class StdioTransport(Transport):
 					try:
 						self.process.stdin.write(msgbytes)
 					except AttributeError:
+						traceback.print_exc()
 						return
 					self.process.stdin.flush()
 				except (BrokenPipeError, OSError) as err:
