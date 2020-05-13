@@ -30,6 +30,8 @@ class Settings(object):
         self.log_server = True
         self.log_stderr = False
         self.log_payloads = False
+        self.auto_restart = False
+        self.origin_encoding = "UTF-8"
 
 
 class ClientStates(object):

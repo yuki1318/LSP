@@ -382,7 +382,7 @@ class Client(object):
 
 
 def attach_stdio_client(process: subprocess.Popen, settings: Settings) -> Client:
-    transport = StdioTransport(process)
+	transport = StdioTransport(process, settings)
     client = Client(transport, settings)
     client.set_transport_failure_handler(lambda: try_terminate_process(process))
     return client
