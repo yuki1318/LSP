@@ -634,8 +634,8 @@ class WindowManager(object):
 			self.restart_sessions()
 		else:
 			result = self._sublime.ok_cancel_dialog(msg, ok_title="Restart")
-		if result == self._sublime.DIALOG_YES:
-			self.restart_sessions()
+			if result == self._sublime.DIALOG_YES:
+				self.restart_sessions()
 
 	def _handle_server_message(self, name: str, message: str) -> None:
 		if not self.server_panel_factory:
