@@ -29,7 +29,7 @@
   // warning: 2
   // info: 3
   // hint: 4
-  "show_diagnostics_severity_level": 2,
+  "show_diagnostics_severity_level": 4,
 
   // Highlighting style of code diagnostics.
   // Valid values are "underline" or "box"
@@ -57,17 +57,6 @@
 
   // Show symbol action links in hover popup if available
   "show_symbol_action_links": false,
-
-  // Request completions for all characters if set to true,
-  // or just after trigger characters only otherwise.
-  "complete_all_chars": true,
-
-  // Controls which hints the completion panel displays
-  // "auto": completion details if available or kind otherwise
-  // "detail": completion details if available
-  // "kind": completion kind if available
-  // "none": completion item label only
-  "completion_hint_type": "auto",
 
   // Disable Sublime Text's explicit and word completion.
   "only_show_lsp_completions": false,

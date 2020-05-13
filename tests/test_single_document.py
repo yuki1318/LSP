@@ -1,7 +1,9 @@
 from copy import deepcopy
 from LSP.plugin.core.url import filename_to_uri
 from LSP.plugin.hover import _test_contents
-from setup import TextDocumentTestCase, TIMEOUT_TIME
+from setup import TextDocumentTestCase
+from setup import TIMEOUT_TIME
+from setup import YieldPromise
 import os
 import sublime
 
@@ -57,13 +59,28 @@ class SingleDocumentTestCase(TextDocumentTestCase):
 
     def test_did_change(self) -> 'Generator':
         assert self.view
+        self.maxDiff = None
         self.insert_characters("A")
         yield from self.await_message("textDocument/didChange")
         # multiple changes are batched into one didChange notification
-        self.insert_characters("B")
-        self.insert_characters("C")
+        self.insert_characters("B\n")
+        self.insert_characters("🙂\n")
         self.insert_characters("D")
-        yield from self.await_message(("textDocument/didChange"))
+        promise = YieldPromise()
+        yield from self.await_message("textDocument/didChange", promise)
+        self.assertEqual(promise.result(), {
+            'contentChanges': [
+                {'rangeLength': 0, 'range': {'start': {'line': 0, 'character': 1}, 'end': {'line': 0, 'character': 1}}, 'text': 'B'},   # noqa
+                {'rangeLength': 0, 'range': {'start': {'line': 0, 'character': 2}, 'end': {'line': 0, 'character': 2}}, 'text': '\n'},  # noqa
+                {'rangeLength': 0, 'range': {'start': {'line': 1, 'character': 0}, 'end': {'line': 1, 'character': 0}}, 'text': '🙂'},  # noqa
+                # Note that this is character offset (2) is correct (UTF-16).
+                {'rangeLength': 0, 'range': {'start': {'line': 1, 'character': 2}, 'end': {'line': 1, 'character': 2}}, 'text': '\n'},  # noqa
+                {'rangeLength': 0, 'range': {'start': {'line': 2, 'character': 0}, 'end': {'line': 2, 'character': 0}}, 'text': 'D'}],  # noqa
+            'textDocument': {
+                'version': self.view.change_count(),
+                'uri': filename_to_uri(TEST_FILE_PATH)
+            }
+        })
 
     def test_sends_save_with_purge(self) -> 'Generator':
         assert self.view

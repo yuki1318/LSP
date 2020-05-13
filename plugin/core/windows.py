@@ -2,7 +2,7 @@ from .diagnostics import DiagnosticsStorage
 from .edit import parse_workspace_edit
 from .logging import debug
 from .message_request_handler import MessageRequestHandler
-from .protocol import Notification, Response
+from .protocol import Notification, Response, TextDocumentSyncKindNone, TextDocumentSyncKindFull
 from .rpc import Client, SublimeLogger
 from .sessions import Session
 from .types import ClientConfig
@@ -14,13 +14,16 @@ from .types import LanguageConfig
 from .types import Settings
 from .types import ViewLike
 from .types import WindowLike
-from .typing import Optional, List, Callable, Dict, Any, Protocol, Set
+from .typing import Optional, List, Callable, Dict, Any, Protocol, Set, Iterable
 from .views import did_change, did_close, did_open, did_save, will_save
 from .workspace import disable_in_project
 from .workspace import enable_in_project
 from .workspace import get_workspace_folders
 from .workspace import ProjectFolders
 from .workspace import sorted_workspace_folders
+from weakref import ref
+from weakref import WeakValueDictionary
+import sublime
 import threading
 
 
@@ -55,7 +58,7 @@ class DocumentHandler(Protocol):
 	def handle_did_open(self, view: ViewLike) -> None:
 		...
 
-	def handle_did_change(self, view: ViewLike) -> None:
+    def handle_did_change(self, view: ViewLike, changes: Iterable[sublime.TextChange]) -> None:
 		...
 
 	def purge_changes(self, view: ViewLike) -> None:
@@ -93,7 +96,8 @@ class DocumentHandlerFactory(object):
 		self._sublime = sublime
 		self._settings = settings
 
-	def for_window(self, window: WindowLike, workspace: ProjectFolders, configs: ConfigRegistry) -> DocumentHandler:
+    def for_window(self, window: WindowLike, workspace: ProjectFolders,
+                   configs: ConfigRegistry) -> DocumentHandler:
 		return WindowDocumentHandler(self._sublime, self._settings, window, workspace, configs)
 
 
@@ -101,17 +105,29 @@ def nop() -> None:
 	pass
 
 
+class PendingBuffer:
+
+    __slots__ = ('view', 'version', 'changes')
+
+    def __init__(self, view: ViewLike, version: int, changes: Iterable[sublime.TextChange]) -> None:
+        self.view = view
+        self.version = version
+        self.changes = list(changes)
+
+    def update(self, version: int, changes: Iterable[sublime.TextChange]) -> None:
+        self.version = version
+        self.changes.extend(changes)
+
+
 class WindowDocumentHandler(object):
-	def __init__(
-		self, sublime: Any, settings: Settings, window: WindowLike, workspace: ProjectFolders,
-		configs: ConfigRegistry
-	) -> None:
+    def __init__(self, sublime: Any, settings: Settings, window: WindowLike, workspace: ProjectFolders,
+                 configs: ConfigRegistry) -> None:
 		self._sublime = sublime
 		self._settings = settings
 		self._configs = configs
 		self._window = window
 		self._document_states = set()  # type: Set[str]
-		self._pending_buffer_changes = dict()  # type: Dict[int, Dict]
+        self._pending_buffer_changes = dict()  # type: Dict[int, PendingBuffer]
 		self._sessions = dict()  # type: Dict[str, List[Session]]
 		self._workspace = workspace
 		self.changed = nop
@@ -241,42 +257,47 @@ class WindowDocumentHandler(object):
 		else:
 			debug('document not tracked', file_name)
 
-	def handle_did_change(self, view: ViewLike) -> None:
+    def handle_did_change(self, view: ViewLike, changes: Iterable[sublime.TextChange]) -> None:
 		buffer_id = view.buffer_id()
 		change_count = view.change_count()
-		if buffer_id in self._pending_buffer_changes:
-			self._pending_buffer_changes[buffer_id]["version"] = change_count
+        pending_buffer = self._pending_buffer_changes.get(buffer_id)
+        if pending_buffer is None:
+            self._pending_buffer_changes[buffer_id] = PendingBuffer(view, change_count, changes)
 		else:
-			self._pending_buffer_changes[buffer_id] = {"view": view, "version": change_count}
+            pending_buffer.update(change_count, changes)
 		self._sublime.set_timeout_async(lambda: self.purge_did_change(buffer_id, change_count), 500)
 
 	def purge_changes(self, view: ViewLike) -> None:
 		self.purge_did_change(view.buffer_id())
 
 	def purge_did_change(self, buffer_id: int, buffer_version: Optional[int] = None) -> None:
-		if buffer_id not in self._pending_buffer_changes:
-			return
+        pending_buffer = self._pending_buffer_changes.get(buffer_id, None)
+        if pending_buffer is not None:
+            if buffer_version is None or buffer_version == pending_buffer.version:
+                self._pending_buffer_changes.pop(buffer_id, None)
+                self.notify_did_change(pending_buffer)
 
-		pending_buffer = self._pending_buffer_changes.get(buffer_id)
-
-		if pending_buffer:
-			if buffer_version is None or buffer_version == pending_buffer["version"]:
-				self.notify_did_change(pending_buffer["view"])
 				self.changed()
 
-	def notify_did_change(self, view: ViewLike) -> None:
+    def notify_did_change(self, pending_buffer: PendingBuffer) -> None:
+        view = pending_buffer.view
+        if not view.is_valid():
+            return
 		file_name = view.file_name()
-		if file_name and view.window() == self._window:
+        if not file_name or view.window() != self._window:
+            return
 			# ensure view is opened.
 			if file_name not in self._document_states:
 				self.handle_did_open(view)
-
-			if view.buffer_id() in self._pending_buffer_changes:
-				del self._pending_buffer_changes[view.buffer_id()]
-				# mypy: expected sublime.View, got ViewLike
-				notification = did_change(view)  # type: ignore
 				for session in self._get_applicable_sessions(view):
-					if session.client and file_name in self._document_states and session.should_notify_did_change():
+            if not session.client:
+                continue
+            sync_kind = session.text_sync_kind()
+            if sync_kind == TextDocumentSyncKindNone:
+                continue
+            changes = None if sync_kind == TextDocumentSyncKindFull else pending_buffer.changes
+            # ViewLike vs sublime.View
+            notification = did_change(view, changes)  # type: ignore
 						session.client.send_notification(notification)
 
 
@@ -296,7 +317,6 @@ class WindowManager(object):
 		session_starter: Callable,
 		sublime: Any,
 		handler_dispatcher: LanguageHandlerListener,
-		on_closed: Optional[Callable] = None,
 		server_panel_factory: Optional[Callable] = None
 	) -> None:
 		self._window = window
@@ -311,12 +331,28 @@ class WindowManager(object):
 		self._sublime = sublime
 		self._handlers = handler_dispatcher
 		self._restarting = False
-		self._on_closed = on_closed
 		self._is_closing = False
 		self._initialization_lock = threading.Lock()
 		self._workspace = workspace
-		self._workspace.on_changed = self._on_project_changed
-		self._workspace.on_switched = self._on_project_switched
+        weakself = ref(self)
+
+        # A weak reference is needed, otherwise self._workspace will have a strong reference to self, meaning a
+        # cyclic dependency.
+        def on_changed(folders: List[str]) -> None:
+            this = weakself()
+            if this is not None:
+                this._on_project_changed(folders)
+
+        # A weak reference is needed, otherwise self._workspace will have a strong reference to self, meaning a
+        # cyclic dependency.
+        def on_switched(folders: List[str]) -> None:
+            this = weakself()
+            if this is not None:
+                this._on_project_switched(folders)
+
+        self._workspace.on_changed = on_changed
+        self._workspace.on_switched = on_switched
+        self._progress = dict()  # type: Dict[Any, Any]
 
 	def _on_project_changed(self, folders: List[str]) -> None:
 		workspace_folders = get_workspace_folders(self._workspace.folders)
@@ -529,16 +565,23 @@ class WindowManager(object):
 			"workspace/applyEdit",
 			lambda params, request_id: self._apply_workspace_edit(params, session.client, request_id))
 
+        session.on_request(
+            "window/workDoneProgress/create",
+            lambda params, request_id: self._receive_progress_token(params, session.client, request_id))
+
 		session.on_notification(
 			"textDocument/publishDiagnostics",
 			lambda params: self.diagnostics.receive(session.config.name, params))
+
+        session.on_notification(
+            "$/progress",
+            lambda params: self._handle_progress_notification(params))
 
 		self._handlers.on_initialized(session.config.name, self._window, session.client)
 
 		session.client.send_notification(Notification.initialized())
 
-		document_sync = session.capabilities.get("textDocumentSync")
-		if document_sync:
+        if session.has_capability("textDocumentSync"):
 			self.documents.add_session(session)
 		self._window.status_message("{} initialized".format(session.config.name))
 
@@ -558,6 +601,42 @@ class WindowManager(object):
 		if not self._is_closing and not self._window.is_valid():
 			self._handle_window_closed()
 
+    def _receive_progress_token(self, params: Dict[str, Any], client: Client, request_id: Any) -> None:
+        self._progress[params['token']] = dict()
+        client.send_response(Response(request_id, None))
+
+    def _handle_progress_notification(self, params: Dict[str, Any]) -> None:
+        token = params['token']
+        if token not in self._progress:
+            debug('unknown $/progress token: {}'.format(token))
+            return
+        value = params['value']
+        if value['kind'] == 'begin':
+            self._progress[token]['title'] = value['title']  # mandatory
+            self._progress[token]['message'] = value.get('message')  # optional
+            self._window.status_message(self._progress_string(token, value))
+        elif value['kind'] == 'report':
+            self._window.status_message(self._progress_string(token, value))
+        elif value['kind'] == 'end':
+            if value.get('message'):
+                status_msg = self._progress[token]['title'] + ': ' + value['message']
+                self._window.status_message(status_msg)
+            self._progress.pop(token, None)
+
+    def _progress_string(self, token: Any, value: Dict[str, Any]) -> str:
+        status_msg = self._progress[token]['title']
+        progress_message = value.get('message')  # optional
+        progress_percentage = value.get('percentage')  # optional
+        if progress_message:
+            self._progress[token]['message'] = progress_message
+            status_msg += ': ' + progress_message
+        elif self._progress[token]['message']:  # reuse last known message if not present
+            status_msg += ': ' + self._progress[token]['message']
+        if progress_percentage:
+            fmt = ' ({:.1f}%)' if isinstance(progress_percentage, float) else ' ({}%)'
+            status_msg += fmt.format(progress_percentage)
+        return status_msg
+
 	def _handle_window_closed(self) -> None:
 		debug('window {} closed, ending sessions'.format(self._window.id()))
 		self._is_closing = True
@@ -568,10 +647,6 @@ class WindowManager(object):
 		if self._restarting:
 			debug('window {} sessions unloaded - restarting'.format(self._window.id()))
 			self.start_active_views()
-		elif not self._window.is_valid():
-			debug('window {} closed and sessions unloaded'.format(self._window.id()))
-			if self._on_closed:
-				self._on_closed()
 
 	def _handle_post_exit(self, config_name: str) -> None:
 		self.documents.remove_session(config_name)
@@ -586,9 +661,6 @@ class WindowManager(object):
 
 	def _handle_server_crash(self, config: ClientConfig) -> None:
 		msg = "Language server {} has crashed, do you want to restart it?".format(config.name)
-		if self._settings.auto_restart is True:
-			self.restart_sessions()
-		else:
 			result = self._sublime.ok_cancel_dialog(msg, ok_title="Restart")
 			if result == self._sublime.DIALOG_YES:
 				self.restart_sessions()
@@ -613,11 +685,9 @@ class WindowManager(object):
 
 
 class WindowRegistry(object):
-	def __init__(
-		self, configs: GlobalConfigs, documents: Any,
-		session_starter: Callable, sublime: Any, handler_dispatcher: LanguageHandlerListener
-	) -> None:
-		self._windows = {}  # type: Dict[int, WindowManager]
+    def __init__(self, configs: GlobalConfigs, documents: Any,
+                 session_starter: Callable, sublime: Any, handler_dispatcher: LanguageHandlerListener) -> None:
+        self._windows = WeakValueDictionary()  # type: WeakValueDictionary[int, WindowManager]
 		self._configs = configs
 		self._documents = documents
 		self._session_starter = session_starter
@@ -644,7 +714,8 @@ class WindowRegistry(object):
 			workspace = ProjectFolders(window)
 			window_configs = self._configs.for_window(window)
 			window_documents = self._documents.for_window(window, workspace, window_configs)
-			diagnostics_ui = self._diagnostics_ui_class(window, window_documents) if self._diagnostics_ui_class else None
+            diagnostics_ui = self._diagnostics_ui_class(window,
+                                                        window_documents) if self._diagnostics_ui_class else None
 			state = WindowManager(
 				window=window,
 				workspace=workspace,
@@ -655,11 +726,6 @@ class WindowRegistry(object):
 				session_starter=self._session_starter,
 				sublime=self._sublime,
 				handler_dispatcher=self._handler_dispatcher,
-				on_closed=lambda: self._on_closed(window),
 				server_panel_factory=self._server_panel_factory)
 			self._windows[window.id()] = state
 		return state
-
-	def _on_closed(self, window: WindowLike) -> None:
-		if window.id() in self._windows:
-			del self._windows[window.id()]

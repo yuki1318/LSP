@@ -71,8 +71,8 @@ def filter_by_range(file_diagnostics: Dict[str, List[Diagnostic]], rge: Range) -
 
 class DiagnosticsCursorListener(LSPViewEventListener):
     def __init__(self, view: sublime.View) -> None:
-        self.has_status = False
         super().__init__(view)
+        self.has_status = False
 
     @classmethod
     def is_applicable(cls, view_settings: dict) -> bool:
@@ -81,18 +81,19 @@ class DiagnosticsCursorListener(LSPViewEventListener):
     def on_selection_modified_async(self) -> None:
         selections = self.view.sel()
         if len(selections) > 0:
-            pos = selections[0].begin()
-            region = self.view.line(pos)
-            line_range = region_to_range(self.view, region)
             file_path = self.view.file_name()
             if file_path:
+                pos = selections[0].begin()
+                region = self.view.line(pos)
+                line_range = region_to_range(self.view, region)
                 diagnostics = filter_by_range(self.manager.diagnostics.get_by_file(file_path), line_range)
                 if diagnostics:
                     flattened = (d for sublist in diagnostics.values() for d in sublist)
                     first_diagnostic = next(flattened, None)
                     if first_diagnostic:
                         self.show_diagnostics_status(first_diagnostic)
-            elif self.has_status:
+                        return
+            if self.has_status:
                 self.clear_diagnostics_status()
 
     def show_diagnostics_status(self, diagnostic: Diagnostic) -> None:
@@ -251,7 +252,7 @@ class DiagnosticViewRegions(DiagnosticsUpdateWalk):
         self._relevant_file = False
 
     def end(self) -> None:
-        for severity in range(DiagnosticSeverity.Error, DiagnosticSeverity.Hint + 1):
+        for severity in range(settings.show_diagnostics_severity_level + 1):
             region_name = "lsp_" + format_severity(severity)
             if severity in self._regions:
                 regions = self._regions[severity]

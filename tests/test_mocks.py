@@ -24,11 +24,11 @@ basic_responses = {
             'hoverProvider': True,
             'completionProvider': {
                 'triggerCharacters': ['.'],
-                'resolveProvider': False
+                'resolveProvider': True
             },
             'textDocumentSync': {
                 "openClose": True,
-                "change": 1,
+                "change": 2,
                 "save": True
             },
             'definitionProvider': True,
@@ -74,6 +74,12 @@ class MockView(object):
         retval = self.change_counter
         self.change_counter += 1
         return retval
+
+    def id(self) -> int:
+        return 1
+
+    def is_valid(self) -> bool:
+        return True
 
     def file_name(self):
         return self._file_name

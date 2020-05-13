@@ -79,6 +79,11 @@ class CompletionItemKind(object):
 completion_item_kinds = list(range(CompletionItemKind.Text, CompletionItemKind.TypeParameter + 1))
 
 
+class InsertTextFormat:
+    PlainText = 1
+    Snippet = 2
+
+
 class DocumentHighlightKind(object):
     Unknown = 0
     Text = 1
@@ -306,7 +311,7 @@ class Notification:
 class Point(object):
     def __init__(self, row: int, col: int) -> None:
         self.row = int(row)
-        self.col = int(col)
+        self.col = int(col)  # in UTF-16
 
     def __repr__(self) -> str:
         return "{}:{}".format(self.row, self.col)
@@ -352,43 +357,12 @@ class Range(object):
         }
 
     def contains(self, point: Point) -> bool:
-        return self.start.row <= point.row <= self.end.row and self.start.col <= point.col <= self.end.col
+        return self.start.row <= point.row <= self.end.row and \
+            (self.end.row > point.row or self.start.col <= point.col <= self.end.col)
 
     def intersects(self, rge: 'Range') -> bool:
-        return rge.start.row <= self.end.row and rge.start.col <= self.end.col and \
-            rge.end.row >= self.start.row and rge.end.col >= self.start.col
-
-
-class ContentChange(object):
-    def __init__(self, text: str, range: Optional[Range] = None, range_length: Optional[int] = None) -> None:
-        """
-
-        [description]
-
-        Arguments:
-            text {str} -- The new text of the range/document
-            range: 'Optional[Range]' {[type]} -- The range of the document that changed.
-            range_length: 'Optional[int]' {[type]} -- The length of the range that got replaced.
-        """
-        self.text = text
-        self.range = range
-        self.range_length = range_length
-
-    def to_lsp(self) -> Dict[str, Any]:
-        change = {
-            'text': self.text,
-        }  # type: Dict[str, Any]
-        if self.range:
-            change['range'] = self.range.to_lsp(),
-        if self.range_length:
-            change['rangeLength'] = self.range_length
-        return change
-
-    def __eq__(self, other: Any) -> bool:
-        return self.text == other.text and self.range == other.range and self.range_length == other.range_length
-
-    def __repr__(self) -> str:
-        return "{} {} '{}'".format(self.range, self.range_length, self.text)
+        return self.contains(rge.start) or self.contains(rge.end) or \
+            rge.contains(self.start) or rge.contains(self.end)
 
 
 class Location(object):
@@ -437,7 +411,7 @@ class Diagnostic(object):
             lsp_diagnostic.get('severity', DiagnosticSeverity.Error),
             lsp_diagnostic.get('source'),
             lsp_diagnostic,
-            [DiagnosticRelatedInformation.from_lsp(info) for info in lsp_diagnostic.get('relatedInformation', [])]
+            [DiagnosticRelatedInformation.from_lsp(info) for info in lsp_diagnostic.get('relatedInformation') or []]
         )
 
     def to_lsp(self) -> Dict[str, Any]:

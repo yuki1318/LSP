@@ -3,8 +3,9 @@ from .plugin.code_actions import LspCodeActionBulbListener
 from .plugin.code_actions import LspCodeActionsCommand
 from .plugin.color import LspColorListener
 from .plugin.completion import CompletionHandler
-from .plugin.completion import CompletionHelper
-from .plugin.completion import LspTrimCompletionCommand
+from .plugin.completion import LspCompleteInsertTextCommand
+from .plugin.completion import LspCompleteTextEditCommand
+from .plugin.completion import LspResolveDocsCommand
 from .plugin.configuration import LspDisableLanguageServerGloballyCommand
 from .plugin.configuration import LspDisableLanguageServerInProjectCommand
 from .plugin.configuration import LspEnableLanguageServerGloballyCommand
@@ -40,4 +41,6 @@ from .plugin.references import LspSymbolReferencesCommand
 from .plugin.rename import LspSymbolRenameCommand
 from .plugin.signature_help import SignatureHelpListener
 from .plugin.symbols import LspDocumentSymbolsCommand
+from .plugin.symbols import LspSelectionAddCommand
+from .plugin.symbols import LspSelectionClearCommand
 from .plugin.workspace_symbol import LspWorkspaceSymbolsCommand
