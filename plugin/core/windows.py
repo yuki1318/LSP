@@ -21,6 +21,8 @@ from .workspace import enable_in_project
 from .workspace import get_workspace_folders
 from .workspace import ProjectFolders
 from .workspace import sorted_workspace_folders
+from weakref import WeakValueDictionary
+from weakref import ref
 import threading
 
 
@@ -295,7 +297,6 @@ class WindowManager(object):
         session_starter: Callable,
         sublime: Any,
         handler_dispatcher: LanguageHandlerListener,
-        on_closed: Optional[Callable] = None,
         server_panel_factory: Optional[Callable] = None
     ) -> None:
         self._window = window
@@ -310,12 +311,27 @@ class WindowManager(object):
         self._sublime = sublime
         self._handlers = handler_dispatcher
         self._restarting = False
-        self._on_closed = on_closed
         self._is_closing = False
         self._initialization_lock = threading.Lock()
         self._workspace = workspace
-        self._workspace.on_changed = self._on_project_changed
-        self._workspace.on_switched = self._on_project_switched
+        weakself = ref(self)
+
+        # A weak reference is needed, otherwise self._workspace will have a strong reference to self, meaning a
+        # cyclic dependency.
+        def on_changed(folders: List[str]) -> None:
+            this = weakself()
+            if this is not None:
+                this._on_project_changed(folders)
+
+        # A weak reference is needed, otherwise self._workspace will have a strong reference to self, meaning a
+        # cyclic dependency.
+        def on_switched(folders: List[str]) -> None:
+            this = weakself()
+            if this is not None:
+                this._on_project_switched(folders)
+
+        self._workspace.on_changed = on_changed
+        self._workspace.on_switched = on_switched
         self._progress = dict()  # type: Dict[Any, Any]
 
     def _on_project_changed(self, folders: List[str]) -> None:
@@ -544,9 +560,9 @@ class WindowManager(object):
         self._handlers.on_initialized(session.config.name, self._window, session.client)
 
         session.client.send_notification(Notification.initialized())
-
-        document_sync = session.capabilities.get("textDocumentSync")
-        if document_sync:
+        if session.config.settings:
+            session.client.send_notification(Notification.didChangeConfiguration({'settings': session.config.settings}))
+        if session.has_capability("textDocumentSync"):
             self.documents.add_session(session)
         self._window.status_message("{} initialized".format(session.config.name))
 
@@ -612,10 +628,6 @@ class WindowManager(object):
         if self._restarting:
             debug('window {} sessions unloaded - restarting'.format(self._window.id()))
             self.start_active_views()
-        elif not self._window.is_valid():
-            debug('window {} closed and sessions unloaded'.format(self._window.id()))
-            if self._on_closed:
-                self._on_closed()
 
     def _handle_post_exit(self, config_name: str) -> None:
         self.documents.remove_session(config_name)
@@ -630,12 +642,9 @@ class WindowManager(object):
 
     def _handle_server_crash(self, config: ClientConfig) -> None:
         msg = "Language server {} has crashed, do you want to restart it?".format(config.name)
-        if self._settings.auto_restart is True:
+        result = self._sublime.ok_cancel_dialog(msg, ok_title="Restart")
+        if result == self._sublime.DIALOG_YES:
             self.restart_sessions()
-        else:
-            result = self._sublime.ok_cancel_dialog(msg, ok_title="Restart")
-            if result == self._sublime.DIALOG_YES:
-                self.restart_sessions()
 
     def _handle_server_message(self, name: str, message: str) -> None:
         if not self.server_panel_factory:
@@ -659,7 +668,7 @@ class WindowManager(object):
 class WindowRegistry(object):
     def __init__(self, configs: GlobalConfigs, documents: Any,
                  session_starter: Callable, sublime: Any, handler_dispatcher: LanguageHandlerListener) -> None:
-        self._windows = {}  # type: Dict[int, WindowManager]
+        self._windows = WeakValueDictionary()  # type: WeakValueDictionary[int, WindowManager]
         self._configs = configs
         self._documents = documents
         self._session_starter = session_starter
@@ -698,11 +707,6 @@ class WindowRegistry(object):
                 session_starter=self._session_starter,
                 sublime=self._sublime,
                 handler_dispatcher=self._handler_dispatcher,
-                on_closed=lambda: self._on_closed(window),
                 server_panel_factory=self._server_panel_factory)
             self._windows[window.id()] = state
         return state
-
-    def _on_closed(self, window: WindowLike) -> None:
-        if window.id() in self._windows:
-            del self._windows[window.id()]
